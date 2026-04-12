@@ -485,5 +485,58 @@ pway_comboDot <- function(contrasts_use = c(unique(pway.mega$group)),
 pway_comboDot(, name = "allcontrasts", num_topPways = 10, height =9, width =9)
 
 
+#### Figure 2F ####
+
+## create heatmaps for selected gene panels
+
+#### HIV restriction factors
+
+## subset differential gene expression results
+sub = res_mega %>%
+  mutate(log2FoldChange = ifelse(padj > 0.05, 0, log2FoldChange)) %>%
+  dplyr::filter( gene %in% panels[panels$panel == "HIVrestriction",]$gene) %>%
+  dplyr::select(gene, log2FoldChange, CloneTreat) %>%
+  pivot_wider(names_from = CloneTreat, values_from = log2FoldChange, id_cols = gene) %>%
+  column_to_rownames(var = "gene") %>%
+  relocate("Uninfect.Bryo", "Uninfect.JQ1", "Uninfect.BryoJQ1", 
+           "JLEG2.1.Bryo", "JLEG2.1.JQ1", "JLEG2.1.BryoJQ1") %>%
+  data.matrix()
+
+
+paletteLength <- 50
+myColor <- colorRampPalette(c('#0000FF', "white", "darkorange"))(paletteLength)
+myBreaks <- c(seq(-5, 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(5/paletteLength, 5, length.out=floor(paletteLength/2)))
+## creat heatmap
+hmap.restricfacts = pheatmap(sub, color=myColor, breaks=myBreaks,  cluster_cols = F, gaps_col = 3)
+
+
+#### TCR signalling genes
+
+### set palette
+paletteLength <- 50
+myColor <- colorRampPalette(c('#0000FF', "white", "darkorange"))(paletteLength)
+
+myBreaks <- c(seq(-5, 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(5/paletteLength, 5, length.out=floor(paletteLength/2)))
+
+select_tcrsignal = read.csv("path/to/heatmap_genes_tcr.csv") %>%
+  pull(gene)
+
+## subset differential gene expression results
+sub = res_mega %>%
+  mutate(log2FoldChange = ifelse(padj > 0.05, 0, log2FoldChange)) %>%
+  mutate(log2FoldChange = ifelse(is.na(log2FoldChange), 0, log2FoldChange)) %>%
+  dplyr::filter( gene %in% select_tcrsignal)%>%
+  select(gene, log2FoldChange, CloneTreat) %>%
+  pivot_wider(names_from = CloneTreat, values_from = log2FoldChange, id_cols = gene, values_fn = function(x) mean(x)) %>%
+  column_to_rownames(var = "gene") %>%
+  relocate("Uninfect.Bryo", "Uninfect.JQ1", "Uninfect.BryoJQ1", 
+           "JLEG2.1.Bryo", "JLEG2.1.JQ1", "JLEG2.1.BryoJQ1") %>%
+  data.matrix()
+## creat heatmap
+hmap.select_tcrsig = pheatmap(sub, color=myColor, breaks=myBreaks,  cluster_cols = F, gaps_col = 3)
+
+
 
 
