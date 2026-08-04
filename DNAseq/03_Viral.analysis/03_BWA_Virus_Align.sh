@@ -37,7 +37,7 @@ for R1 in "$INPUT_DIR"/*_R1_tr_1P.fq.gz; do
 
     MARKDUP_BAM="$OUTPUT_DIR/${SAMPLE}.markdup.bam"
     VIRUS_BAM="$OUTPUT_DIR/${SAMPLE}.virus_mapped.bam"
-    FINAL_BAM="$FINAL_OUTPUT_DIR/${SAMPLE}.virus_final.bam"
+    FINAL_BAM="$FINAL_OUTPUT_DIR/${SAMPLE}.hiv.rg.bam"
 
     echo "----------------------------------------"
     date

@@ -7,11 +7,6 @@ set -euo pipefail
 # Description: Per-base sequencing depth across the provirus, breadth-of-
 #              coverage statistics, and bedgraph tracks for plotting.
 #
-# TERMINOLOGY
-#   Depth   - how many reads cover a single position (e.g. 2,326x).
-#   Breadth - what fraction of the genome reaches a depth threshold
-#             (e.g. 100% of positions at >=30x).
-#
 # Reported statistics use median depth plus breadth rather than a raw minimum:
 # the raw minimum is dominated by the read-placement ramp at the very ends of
 # a linear reference and understates the data.

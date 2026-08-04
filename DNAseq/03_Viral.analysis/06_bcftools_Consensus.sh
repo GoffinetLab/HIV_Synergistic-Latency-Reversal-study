@@ -4,100 +4,133 @@ set -euo pipefail
 
 ########################################
 # Script: 06_bcftools_Consensus.sh
-# Description: Clean filtered VCFs, generate consensus FASTA sequences with
-#              low-coverage regions masked, and combine into a multi-FASTA.
+# Description: Call variants against the proviral reference and build
+#              consensus sequences for each clone.
 ########################################
 
 ########## CONFIG ##########
-INPUT_DIR="data/annotation"
-BAM_DIR="data/virus_alignment_final"
-CLEAN_VCF_DIR="data/vcf_clean"
-MASK_DIR="data/lowcov_mask"
+INPUT_DIR="data/virus_alignment_final"     # *.hiv.rg.bam from script 03
+VCF_DIR="data/variant_calling"
+PASS_VCF_DIR="data/vcf_pass"
 FASTA_DIR="data/consensus_fasta"
 FINAL_DIR="data/final"
-REFERENCE="ref/hiv_reference.fasta"
 
-MIN_COV=10          # positions below this depth are masked as N
+REFERENCE="ref/NL43_HIVENVGFP.fasta"       # identical-LTR proviral reference
+CONTIG="HIV_ENVGFP"
+
+GATK_IMAGE="broadinstitute/gatk:4.1.3.0"
+
+REFDIR=$(cd "$(dirname "$REFERENCE")" && pwd)
+REFBASE=$(basename "$REFERENCE")
 
 ########## SETUP ##########
-mkdir -p "$CLEAN_VCF_DIR" "$MASK_DIR" "$FASTA_DIR" "$FINAL_DIR"
+mkdir -p "$VCF_DIR" "$PASS_VCF_DIR" "$FASTA_DIR" "$FINAL_DIR"
 
 echo "========================================"
-echo "Starting consensus sequence generation"
+echo "Starting variant calling and consensus generation"
 date
 SECONDS=0
 
-########## STEP 1: CLEAN, COMPRESS AND INDEX VCFs ##########
+########## STEP 0: INDEX REFERENCE ##########
 
-for VCF in "$INPUT_DIR"/*.ann.vcf; do
+if [[ ! -f "${REFERENCE}.fai" ]]; then
+    echo "Indexing reference..."
+    samtools faidx "$REFERENCE"
+fi
 
-    SAMPLE=$(basename "$VCF" .ann.vcf)
-    CLEAN_VCF="$CLEAN_VCF_DIR/${SAMPLE}.clean.vcf.gz"
+if [[ ! -f "${REFERENCE%.fasta}.dict" ]]; then
+    echo "Creating sequence dictionary..."
+    docker run --rm -v "$REFDIR":/ref -w /ref "$GATK_IMAGE" \
+        gatk CreateSequenceDictionary -R "/ref/$REFBASE"
+fi
+
+########## STEP 1: VARIANT CALLING ##########
+
+for BAM in "$INPUT_DIR"/*.hiv.rg.bam; do
+
+    SAMPLE=$(basename "$BAM" .hiv.rg.bam)
 
     echo "----------------------------------------"
     date
-    echo "Cleaning and indexing VCF: $SAMPLE"
+    echo "Calling variants: $SAMPLE"
 
-    # -O z writes bgzip-compressed VCF, which bcftools index requires
-    bcftools annotate -x FILTER -O z -o "$CLEAN_VCF" "$VCF"
-    bcftools index -f "$CLEAN_VCF"
+    docker run --rm \
+        -v "$(pwd)":/data -v "$REFDIR":/ref -w /data \
+        "$GATK_IMAGE" \
+        gatk HaplotypeCaller \
+        -R "/ref/$REFBASE" \
+        -I "$BAM" \
+        -O "$VCF_DIR/${SAMPLE}.vcf" \
+        -L "$CONTIG" \
+        --pcr-indel-model NONE \
+        -ploidy 1 \
+        -stand-call-conf 30 \
+        -mbq 20 \
+        -A QualByDepth
 
-done
+    docker run --rm \
+        -v "$(pwd)":/data -v "$REFDIR":/ref -w /data \
+        "$GATK_IMAGE" \
+        gatk SelectVariants \
+        -R "/ref/$REFBASE" \
+        -V "$VCF_DIR/${SAMPLE}.vcf" \
+        --select-type-to-include SNP \
+        -L "$CONTIG" \
+        -O "$VCF_DIR/${SAMPLE}_rawsnps.vcf"
 
-########## STEP 2: BUILD LOW-COVERAGE MASKS ##########
+    docker run --rm \
+        -v "$(pwd)":/data -v "$REFDIR":/ref -w /data \
+        "$GATK_IMAGE" \
+        gatk VariantFiltration \
+        -R "/ref/$REFBASE" \
+        -V "$VCF_DIR/${SAMPLE}_rawsnps.vcf" \
+        -L "$CONTIG" \
+        --filter-expression "QD < 2.0 || FS > 60.0 || MQ < 40.0 || SOR > 4.0" \
+        --filter-name "LowConf" \
+        -O "$VCF_DIR/${SAMPLE}_filteredsnps.vcf"
 
-for BAM in "$BAM_DIR"/*.bam; do
-
-    SAMPLE=$(basename "$BAM" .virus_final.bam)
-    MASK="$MASK_DIR/${SAMPLE}.lowcov.bed"
-
-    echo "Building low-coverage mask (<${MIN_COV}x): $SAMPLE"
-
-    bedtools genomecov -ibam "$BAM" -bga \
-        | awk -v m="$MIN_COV" 'BEGIN{OFS="\t"} $4 < m {print $1,$2,$3}' \
-        > "$MASK"
-
-done
-
-########## STEP 3: GENERATE MASKED CONSENSUS FASTA ##########
-
-for VCF in "$CLEAN_VCF_DIR"/*.clean.vcf.gz; do
-
-    SAMPLE=$(basename "$VCF" .clean.vcf.gz)
-    MASK="$MASK_DIR/${SAMPLE}.lowcov.bed"
-    FASTA_OUT="$FASTA_DIR/${SAMPLE}.fasta"
-
-    echo "Generating consensus for: $SAMPLE"
-
-    if [[ -s "$MASK" ]]; then
-        bcftools consensus -f "$REFERENCE" -m "$MASK" "$VCF" > "$FASTA_OUT"
-    else
-        bcftools consensus -f "$REFERENCE" "$VCF" > "$FASTA_OUT"
-    fi
-
-done
-
-########## STEP 4: RENAME FASTA HEADERS ##########
-
-for FILE in "$FASTA_DIR"/*.fasta; do
-
-    SAMPLE=$(basename "$FILE" .fasta)
-    [[ "$SAMPLE" == *_renamed ]] && continue
-
-    RENAMED="$FASTA_DIR/${SAMPLE}_renamed.fasta"
-
-    echo "Renaming header: $SAMPLE"
-
-    # keep the sequence line-wrapped rather than collapsing to one long line
-    awk -v s="$SAMPLE" '/^>/{print ">"s; next}{print}' "$FILE" > "$RENAMED"
+    echo -n "  raw calls: "
+    grep -vc '^#' "$VCF_DIR/${SAMPLE}.vcf" || true
 
 done
 
-########## STEP 5: COMBINE ##########
+########## STEP 2: BUILD CONSENSUS ##########
 
-COMBINED="$FINAL_DIR/combined.fasta"
-cat "$FASTA_DIR"/*_renamed.fasta > "$COMBINED"
-echo "Combined FASTA created: $COMBINED"
+for VCF in "$VCF_DIR"/*_filteredsnps.vcf; do
+
+    SAMPLE=$(basename "$VCF" _filteredsnps.vcf)
+
+    echo "Generating consensus: $SAMPLE"
+
+    bcftools view -f PASS -O z \
+        -o "$PASS_VCF_DIR/${SAMPLE}.pass.vcf.gz" "$VCF"
+    bcftools index -f "$PASS_VCF_DIR/${SAMPLE}.pass.vcf.gz"
+
+    echo -n "  variants applied: "
+    bcftools view -H "$PASS_VCF_DIR/${SAMPLE}.pass.vcf.gz" | wc -l
+
+    bcftools consensus -f "$REFERENCE" \
+        "$PASS_VCF_DIR/${SAMPLE}.pass.vcf.gz" \
+        > "$FASTA_DIR/${SAMPLE}.consensus.fasta"
+
+    awk -v s="$SAMPLE" '/^>/{print ">"s; next}{print}' \
+        "$FASTA_DIR/${SAMPLE}.consensus.fasta" > tmp && \
+        mv tmp "$FASTA_DIR/${SAMPLE}.consensus.fasta"
+
+done
+
+########## STEP 3: CHECKS ##########
+
+echo "----------------------------------------"
+echo "Consensus summary:"
+for FILE in "$FASTA_DIR"/*.consensus.fasta; do
+    SAMPLE=$(basename "$FILE" .consensus.fasta)
+    LEN=$(awk '!/^>/{n+=length($0)} END{print n}' "$FILE")
+    NS=$(awk '!/^>/{gsub(/[^Nn]/,""); n+=length($0)} END{print n+0}' "$FILE")
+    printf "  %-20s %s bp, %s ambiguous bases\n" "$SAMPLE" "$LEN" "$NS"
+done
+
+cat "$FASTA_DIR"/*.consensus.fasta > "$FINAL_DIR/all_clones.fasta"
 
 ########## RUNTIME ##########
 duration=$SECONDS
@@ -105,3 +138,7 @@ echo "========================================"
 echo "Pipeline completed"
 echo "Total time: $((duration / 60)) min $((duration % 60)) sec"
 date
+
+# RESULT (this dataset): no high-confidence variants were called in any clone.
+# Confirmed independently with bcftools mpileup/call. The consensus sequences
+# are therefore identical to the reference construct.

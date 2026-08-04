@@ -6,7 +6,8 @@ set -euo pipefail
 # Script: 02_Gridss_Intsites.sh
 # Description: Detect viral integration sites using GRIDSS VirusBreakend
 #
-#   This version filters on the GRIDSS quality FILTER field, keeping
+# NOTE ON FILTERING
+#   This version filters on the GRIDSS quality FILTER field instead, keeping
 #   every junction that passes VirusBreakend's own criteria, and reports the
 #   supporting evidence so calls can be judged on their merits.
 ########################################
